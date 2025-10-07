@@ -1,0 +1,293 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f7f6;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    min-height: 100vh;
+}
+
+.container {
+    display: flex;
+    width: 95%;
+    max-width: 1400px;
+    margin: 20px auto;
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    min-height: 80vh;
+}
+
+/* Zone 1: Sidebar - Base de Connaissances */
+.sidebar {
+    width: 25%;
+    padding: 20px;
+    background-color: #eef4f7;
+    border-right: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar h2 {
+    color: #2c3e50;
+    margin-top: 0;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #cfd8dc;
+    font-size: 1.3em;
+}
+
+.upload-section {
+    margin-bottom: 20px;
+    padding: 15px;
+    background-color: #f7f9fb;
+    border-radius: 5px;
+    border: 1px solid #e0e6eb;
+}
+
+.upload-section h3 {
+    margin-top: 0;
+    color: #4a6572;
+    font-size: 1.1em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.upload-section input[type="file"] {
+    display: block;
+    margin-bottom: 10px;
+    padding: 5px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    width: calc(100% - 10px);
+}
+
+.upload-section button {
+    background-color: #007bff;
+    color: white;
+    padding: 8px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background-color 0.2s ease;
+}
+
+.upload-section button:hover {
+    background-color: #0056b3;
+}
+
+.file-list {
+    margin-top: 10px;
+    border-top: 1px solid #e0e6eb;
+    padding-top: 10px;
+}
+
+.file-list p {
+    margin: 5px 0;
+    font-size: 0.9em;
+    color: #555;
+}
+
+.status-message {
+    margin-top: 20px;
+    font-size: 0.9em;
+    color: green;
+    text-align: center;
+}
+
+.info-icon {
+    font-size: 0.9em;
+    color: #6c757d;
+    cursor: help;
+}
+
+/* Zone 2: Chat Area - Dialogue avec l'Assistant IA */
+.chat-area {
+    width: 35%;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #ddd;
+    padding: 20px;
+}
+
+.chat-area h2 {
+    color: #2c3e50;
+    margin-top: 0;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #cfd8dc;
+    font-size: 1.3em;
+    text-align: center;
+}
+
+.chatbox {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid #e0e6eb;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    background-color: #fdfdfd;
+}
+
+.message {
+    margin-bottom: 10px;
+    padding: 8px 12px;
+    border-radius: 15px;
+    max-width: 80%;
+    word-wrap: break-word;
+}
+
+.user-message {
+    background-color: #007bff;
+    color: white;
+    margin-left: auto;
+    text-align: right;
+    border-bottom-right-radius: 0;
+}
+
+.ai-message {
+    background-color: #e2e6ea;
+    color: #333;
+    margin-right: auto;
+    text-align: left;
+    border-bottom-left-radius: 0;
+}
+
+.chat-input {
+    display: flex;
+    gap: 10px;
+}
+
+.chat-input input[type="text"] {
+    flex-grow: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    font-size: 1em;
+}
+
+.chat-input button {
+    background-color: #28a745;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.2s ease;
+}
+
+.chat-input button:hover {
+    background-color: #218838;
+}
+
+/* Zone 3: Preview Area - Prévisualisation du Devis */
+.preview-area {
+    width: 40%;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+}
+
+.preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #cfd8dc;
+    margin-bottom: 15px;
+}
+
+.preview-header h2 {
+    color: #2c3e50;
+    margin: 0;
+    font-size: 1.3em;
+}
+
+.preview-header button {
+    background-color: #6c757d;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.95em;
+    transition: background-color 0.2s ease;
+}
+
+.preview-header button:hover:not(:disabled) {
+    background-color: #5a6268;
+}
+
+.preview-header button:disabled {
+    background-color: #aeb5bd;
+    cursor: not-allowed;
+}
+
+
+.quote-preview {
+    flex-grow: 1;
+    background-color: #fefefe;
+    border: 1px solid #e0e6eb;
+    border-radius: 5px;
+    padding: 15px;
+    overflow-y: auto;
+    font-size: 0.9em;
+    line-height: 1.6;
+    color: #444;
+}
+
+.quote-preview h3 {
+    color: #2c3e50;
+    margin-top: 15px;
+    margin-bottom: 8px;
+    font-size: 1.1em;
+}
+
+.quote-preview p {
+    margin: 5px 0;
+}
+
+.quote-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.quote-preview th, .quote-preview td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+.quote-preview th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+.quote-preview .total-section {
+    text-align: right;
+    margin-top: 20px;
+    font-size: 1em;
+}
+
+.quote-preview .total-section div {
+    margin-bottom: 5px;
+}
+
+.quote-preview .total-section strong {
+    color: #007bff;
+}
+
+.quote-preview .mentions {
+    margin-top: 25px;
+    font-size: 0.85em;
+    color: #666;
+    border-top: 1px solid #eee;
+    padding-top: 10px;
+}

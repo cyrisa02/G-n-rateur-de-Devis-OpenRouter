@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Générateur de Devis Artisan</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Zone 1: Base de Connaissances -->
+        <div class="sidebar">
+            <h2>Base de Connaissances</h2>
+            <div class="upload-section">
+                <h3>Fichiers Tarifs PDF</h3>
+                <input type="file" id="tariffsInput" multiple accept=".pdf">
+                <button onclick="uploadTariffs()">Uploader Fichiers Tarifs</button>
+                <div id="tariffsList" class="file-list">
+                    {% for file in uploaded_tariffs %}
+                        <p>📄 {{ file }}</p>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="upload-section">
+                <h3>Prompt Métier PDF
+                    <span class="info-icon" title="Ce fichier doit contenir vos informations d'entreprise, mentions légales, conditions de paiement, structure de devis type, etc.">ℹ️</span>
+                </h3>
+                <input type="file" id="promptMetierInput" accept=".pdf">
+                <button onclick="uploadPromptMetier()">Uploader Prompt Métier</button>
+                <div id="promptMetierFile" class="file-list">
+                    {% if uploaded_prompt %}
+                        <p>📄 {{ uploaded_prompt }}</p>
+                    {% endif %}
+                </div>
+            </div>
+            <p class="status-message" id="uploadStatus"></p>
+        </div>
+
+        <!-- Zone 2: Dialogue avec l'Assistant IA -->
+        <div class="chat-area">
+            <h2>Assistant Devis IA</h2>
+            <div id="chatbox" class="chatbox">
+                <div class="message ai-message">
+                    <p>Bonjour ! Décrivez-moi simplement le chantier à réaliser et je préparerai le devis pour vous.</p>
+                </div>
+            </div>
+            <div class="chat-input">
+                <input type="text" id="userInput" placeholder="Décrivez le chantier ou demandez une modification...">
+                <button onclick="sendMessage()">Envoyer</button>
+            </div>
+        </div>
+
+        <!-- Zone 3: Prévisualisation du Devis -->
+        <div class="preview-area">
+            <div class="preview-header">
+                <h2>Prévisualisation du Devis</h2>
+                <button id="downloadPdfBtn" onclick="downloadPdf()" {% if not current_quote %}disabled{% endif %}>Télécharger le Devis en PDF</button>
+            </div>
+            <div id="quotePreview" class="quote-preview">
+                <!-- Le devis simulé sera affiché ici -->
+                <p>Le devis apparaîtra ici une fois que vous aurez commencé la conversation avec l'IA.</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
