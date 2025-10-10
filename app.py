@@ -1,275 +1,621 @@
 import os
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
-import json
-import io
+from dotenv import load_dotenv
+import markdown
+import logging
+from datetime import datetime
+
+# Importations CORRIGÉES pour LangChain
+from langchain_huggingface import HuggingFaceEmbeddings  # CORRIGÉ
+from langchain_community.vectorstores import FAISS
+from langchain_openai import ChatOpenAI  # CORRIGÉ
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.prompts import PromptTemplate
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Charger les variables d'environnement
+load_dotenv()
 
 app = Flask(__name__)
 
-# Configuration des dossiers d'upload
-UPLOAD_FOLDER = 'uploads'
-TARIFFS_FOLDER = os.path.join(UPLOAD_FOLDER, 'tariffs')
-PROMPT_FOLDER = os.path.join(UPLOAD_FOLDER, 'prompt_metier')
+# Configuration des dossiers
+UPLOAD_FOLDER = 'data'
+TARIFFS_FOLDER = os.path.join(UPLOAD_FOLDER, 'tarifs')
+METIER_FOLDER = os.path.join(UPLOAD_FOLDER, 'metier')
 
 os.makedirs(TARIFFS_FOLDER, exist_ok=True)
-os.makedirs(PROMPT_FOLDER, exist_ok=True)
+os.makedirs(METIER_FOLDER, exist_ok=True)
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max upload size
+app.config.update(
+    UPLOAD_FOLDER=UPLOAD_FOLDER,
+    TARIFFS_FOLDER=TARIFFS_FOLDER,
+    METIER_FOLDER=METIER_FOLDER,
+    MAX_CONTENT_LENGTH=50 * 1024 * 1024  # 50MB
+)
 
-# Variables pour stocker les noms des fichiers uploadés (simplifié pour le MVP)
-uploaded_tariffs_files = []
-uploaded_prompt_metier_file = None
+# Configuration OpenRouter
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY manquant dans .env")
 
-# --- Fonctions utilitaires (simulées pour l'IA et le PDF) ---
+# CONFIGURATION CORRECTE pour OpenRouter
+os.environ["OPENAI_API_KEY"] = OPENROUTER_API_KEY
+os.environ["OPENAI_API_BASE"] = "https://openrouter.ai/api/v1"
 
-def simulate_ai_response(user_message, current_quote_data):
-    """
-    Simule une réponse de l'IA et la génération/mise à jour du devis.
-    Dans une vraie application, cela appellerait le LLM avec le contexte RAG.
-    """
-    response_text = ""
-    updated_quote = current_quote_data # Copie pour modification
+# Variables globales
+knowledge_base = None
+prompt_metier_doc = None
+conversation_chain = None
+chat_history = []
+documents_loaded = False
 
-    if "devis" in user_message.lower() or "prépare" in user_message.lower():
-        response_text = "Très bien, je commence à préparer le devis. J'ai besoin de quelques détails..."
-        # Exemple de génération de devis initial
-        updated_quote = {
-            "entreprise": "Mon Entreprise Artisanale",
-            "client": "M. Dupont",
-            "adresse_client": "123 Rue de l'Exemple, 75001 Paris",
-            "date": "2023-10-27",
-            "lignes": [
-                {"description": "Dépôt ancienne baignoire", "quantite": 1, "unite": "forfait", "prix_unitaire": 150.00, "total_ht": 150.00},
-                {"description": "Fourniture et pose douche à l'italienne modèle X", "quantite": 1, "unite": "forfait", "prix_unitaire": 1200.00, "total_ht": 1200.00},
-                {"description": "Pose faïence modèle Y", "quantite": 25, "unite": "m2", "prix_unitaire": 45.00, "total_ht": 1125.00},
-                {"description": "Peinture plafond SDB", "quantite": 6, "unite": "m2", "prix_unitaire": 25.00, "total_ht": 150.00},
-            ],
-            "total_ht": 2625.00,
-            "tva_rate": 0.20,
-            "total_tva": 525.00,
-            "total_ttc": 3150.00,
-            "mentions": "Validité de l'offre : 30 jours. Conditions de règlement : 30% à la commande, solde à réception.",
-            "prompt_metier_used": uploaded_prompt_metier_file
-        }
-    elif "change la quantité de faïence à" in user_message.lower():
+# PROMPT GORK INTÉGRÉ
+GORK_SYSTEM_PROMPT = """# RÔLE
+Tu es un professionnel de la vente en B2B spécialisé dans la tapisserie d'ameublement.
+Tu crées des devis détaillés basés sur les besoins des clients.
+Ton professionnel, courtois et précis.
+
+Entreprise: SAS Tapisserie Simon
+Adresse: 27 rue des Platanes, 02200 Soissons
+Tarif horaire: 45€/heure
+
+# ACCÈS AUX DONNÉES
+Tu as accès aux documents suivants via le CONTEXTE:
+- BD_Tissu_Casal.pdf : Prix et références tissus Casal
+- BD_Tissu_Frey.pdf : Prix et références tissus Frey
+- BD_Main_Oeuvre.pdf : Tarifs main d'œuvre par type de fauteuil
+
+⚠️ IMPORTANT: Recherche TOUJOURS dans ces documents. Ne dis JAMAIS que tu n'as pas accès.
+
+# PROCESSUS (4 PROTOCOLES)
+
+## PROTOCOLE 1: RÉSUMÉ DE PROJET
+Format de sortie:
+```
+Nom du client: [À remplir]
+ID du projet: [À remplir]
+Adresse du client: [À remplir]
+Description du travail: [À remplir]
+```
+
+Puis demande: "Veux-tu que je passe par le 'Protocole de matériel' ou as-tu déjà les matériaux ?"
+
+## PROTOCOLE 2: PROTOCOLE DE MATÉRIEL
+Pose des questions pour déterminer:
+- Type de fauteuil (Voltaire, Bergère, etc.)
+- Type de travail: Réfection complète OU changement tissu
+- Tissu: uni ou avec motif? (IMPORTANT pour calcul)
+- Client fournit le tissu? (majoration 20% si OUI)
+- Finition: Sans / Clous décoratifs / Galon / Passepoil
+- Nombre de pièces
+
+RÈGLES:
+- Réfection complète = Garniture Crins et matières naturelles
+- Tissu motif = Consommation différente (voir calculs)
+
+## PROTOCOLE 3: CALCUL
+### A. MAIN D'ŒUVRE (BD_Main_Oeuvre.pdf)
+- Réfection complète: `Prix_unitaire_réfection_totale`
+- Changement tissu: `Prix_unitaire_recouvrement`
+- Client fournit tissu: +20% majoration
+
+### B. CONSOMMATION TISSU
+**Tissu UNI:**
+- 1 fauteuil: `Consommation_tissu_1_fauteuil`
+- 2 fauteuils: `Consommation_tissu_2_fauteuils`
+
+**Tissu MOTIF:**
+- 1 fauteuil: `Consommation_tissu_1_fauteuil × 1,3 + Motif/Raccord`
+- 2 fauteuils: `Consommation_tissu_2_fauteuils × 1,3 + Motif/Raccord`
+
+### C. PRIX TISSUS (BD_Tissu)
+- Prix unitaire × Consommation × 1,50 (marge 50%)
+
+### D. DÉPLACEMENTS
+- Kilomètres × 0,8€
+
+## PROTOCOLE 4: DEVIS FINAL
+
+```markdown
+# DEVIS - [Type de Projet]
+
+**SAS Tapisserie Simon**
+27 rue des Platanes
+02200 Soissons
+Date: {date}
+
+## 📋 INFORMATIONS CLIENT
+- **Nom:** [Nom]
+- **Adresse:** [Adresse]
+- **Référence:** [ID]
+
+## 📝 DESCRIPTION
+[Description détaillée]
+
+## 💰 PRESTATIONS
+
+### Main d'œuvre - [Type fauteuil]
+- **Type:** [Réfection / Changement]
+- **Quantité:** [X]
+- **Tarif unitaire:** [Prix] € HT
+- **Total:** [Calcul] € HT
+
+### Fournitures
+#### Tissu
+- **Référence:** [Réf BD]
+- **Nom:** [Nom tissu]
+- **Type:** [Uni / Motif raccord X cm]
+- **Consommation:** [X,X] m
+- **Prix unitaire:** [Prix] € HT/m
+- **Total:** [Calcul] € HT
+
+#### Finition
+- **Type:** [Sans/Clous/Galon/Passepoil]
+- **Coût:** [X] € HT
+
+### Déplacements
+- **Kilométrage:** [X] km
+- **Indemnité:** [X] € HT
+
+## 📊 RÉCAPITULATIF
+
+| Désignation | Montant HT |
+|-------------|------------|
+| Main d'œuvre | [X] € |
+| Fournitures | [X] € |
+| Déplacements | [X] € |
+| **Sous-total HT** | **[X] €** |
+| TVA (20%) | [X] € |
+| **TOTAL TTC** | **[X] €** |
+
+## 📅 CONDITIONS
+- **Délai:** [X] jours
+- **Paiement:** [Modalités]
+- **Validité:** 30 jours
+
+*Devis établi le {date}*
+```
+
+# COMMANDES
+- "Débuter une estimation" : Lance Protocole 1
+- "Donne moi les coûts des matériaux en direct" : Recherche prix dans BD
+
+{prompt_metier}
+
+CONTEXTE DES DOCUMENTS:
+{context}
+
+QUESTION: {question}
+
+RÉPONSE (suivre protocoles et utiliser CONTEXTE):"""
+
+
+def initialize_embeddings():
+    """Initialise les embeddings."""
+    try:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        logger.info("✓ Embeddings initialisés")
+        return embeddings
+    except Exception as e:
+        logger.error(f"Erreur embeddings: {e}")
+        raise
+
+
+def process_pdfs(file_paths):
+    """Charge et vectorise les PDFs."""
+    documents = []
+    
+    for file_path in file_paths:
         try:
-            new_qty_str = user_message.split("faïence à")[1].strip().split("m2")[0].strip()
-            new_qty = float(new_qty_str)
-            for line in updated_quote.get("lignes", []):
-                if "faïence" in line["description"].lower():
-                    line["quantite"] = new_qty
-                    line["total_ht"] = round(new_qty * line["prix_unitaire"], 2)
-                    break
-            # Recalculer les totaux
-            updated_quote["total_ht"] = sum(line["total_ht"] for line in updated_quote["lignes"])
-            updated_quote["total_tva"] = round(updated_quote["total_ht"] * updated_quote["tva_rate"], 2)
-            updated_quote["total_ttc"] = round(updated_quote["total_ht"] + updated_quote["total_tva"], 2)
-            response_text = f"J'ai mis à jour la quantité de faïence à {new_qty} m². Le devis est ajusté."
-        except Exception:
-            response_text = "Désolé, je n'ai pas compris la nouvelle quantité de faïence."
-    else:
-        response_text = "Je peux vous aider à générer un devis. Décrivez-moi simplement le chantier."
+            logger.info(f"📄 Chargement: {os.path.basename(file_path)}")
+            loader = PyPDFLoader(file_path)
+            docs = loader.load()
+            
+            # Ajouter métadonnées
+            for doc in docs:
+                doc.metadata['source_file'] = os.path.basename(file_path)
+                if 'Casal' in file_path:
+                    doc.metadata['type'] = 'BD_TISSU_CASAL'
+                elif 'Frey' in file_path:
+                    doc.metadata['type'] = 'BD_TISSU_FREY'
+                elif 'Main' in file_path or 'Oeuvre' in file_path:
+                    doc.metadata['type'] = 'BD_MAIN_OEUVRE'
+                else:
+                    doc.metadata['type'] = 'TARIF'
+            
+            documents.extend(docs)
+            logger.info(f"  ✓ {len(docs)} pages chargées")
+            
+        except Exception as e:
+            logger.error(f"  ✗ Erreur {os.path.basename(file_path)}: {e}")
 
-    return response_text, updated_quote
+    if not documents:
+        logger.warning("Aucun document chargé")
+        return None
 
-def generate_pdf_content(quote_data):
-    """
-    Simule la génération d'un contenu PDF.
-    Dans une vraie application, cela utiliserait une bibliothèque PDF pour créer un vrai PDF formaté.
-    """
-    if not quote_data:
-        return "Aucun devis à générer."
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html lang="fr">
-    <head>
-        <meta charset="UTF-8">
-        <title>Devis - {quote_data.get('entreprise', 'Devis')}</title>
-        <style>
-            body {{ font-family: 'Arial', sans-serif; font-size: 10pt; line-height: 1.4; }}
-            .container {{ width: 800px; margin: auto; padding: 20px; border: 1px solid #eee; }}
-            h1, h2 {{ color: #333; }}
-            .header, .footer {{ text-align: center; margin-bottom: 20px; }}
-            .client-info, .company-info {{ margin-bottom: 20px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-            th {{ background-color: #f2f2f2; }}
-            .total-section {{ text-align: right; }}
-            .total-section div {{ margin-top: 5px; }}
-            .mentions {{ font-size: 9pt; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <img src="https://via.placeholder.com/100x50?text=Logo" alt="Logo Entreprise" style="float: left; margin-right: 20px;">
-                <h1>Devis</h1>
-                <p>Date : {quote_data.get('date', 'N/A')}</p>
-            </div>
-            <div style="clear: both;"></div>
-
-            <div class="company-info">
-                <h2>Votre Entreprise</h2>
-                <p><strong>{quote_data.get('entreprise', 'Nom Entreprise')}</strong><br>
-                Adresse: 1 Rue de l'Artisan, 75000 Paris<br>
-                SIRET: 12345678900000<br>
-                Assurance: AXA Pro (Contrat n°12345)</p>
-            </div>
-
-            <div class="client-info">
-                <h2>Client</h2>
-                <p><strong>{quote_data.get('client', 'Nom Client')}</strong><br>
-                {quote_data.get('adresse_client', 'Adresse Client')}</p>
-            </div>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>Description</th>
-                        <th>Quantité</th>
-                        <th>Unité</th>
-                        <th>Prix Unitaire HT</th>
-                        <th>Total HT</th>
-                    </tr>
-                </thead>
-                <tbody>
-    """
-    for line in quote_data.get('lignes', []):
-        html_content += f"""
-                    <tr>
-                        <td>{line.get('description', '')}</td>
-                        <td>{line.get('quantite', '')}</td>
-                        <td>{line.get('unite', '')}</td>
-                        <td>{line.get('prix_unitaire', ''):.2f} €</td>
-                        <td>{line.get('total_ht', ''):.2f} €</td>
-                    </tr>
-        """
-    html_content += f"""
-                </tbody>
-            </table>
-
-            <div class="total-section">
-                <div>Total HT : <strong>{quote_data.get('total_ht', 0.00):.2f} €</strong></div>
-                <div>TVA ({quote_data.get('tva_rate', 0.00)*100:.0f}%) : <strong>{quote_data.get('total_tva', 0.00):.2f} €</strong></div>
-                <div>Total TTC : <strong>{quote_data.get('total_ttc', 0.00):.2f} €</strong></div>
-            </div>
-
-            <div class="mentions">
-                <h3>Mentions Légales & Conditions</h3>
-                <p>{quote_data.get('mentions', 'Aucune mention spécifique.')}</p>
-                <p>Source Prompt Métier (simulé) : {quote_data.get('prompt_metier_used', 'N/A')}</p>
-            </div>
-
-            <div class="footer" style="margin-top: 50px;">
-                <p>Merci de votre confiance !</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    return html_content
+    try:
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200,
+            chunk_overlap=250,
+            length_function=len
+        )
+        chunks = text_splitter.split_documents(documents)
+        logger.info(f"✂️  {len(chunks)} chunks créés")
+        
+        embeddings = initialize_embeddings()
+        vectorstore = FAISS.from_documents(chunks, embeddings)
+        logger.info(f"✓ Vectorstore créé ({len(chunks)} chunks)")
+        
+        return vectorstore
+        
+    except Exception as e:
+        logger.error(f"Erreur création vectorstore: {e}")
+        return None
 
 
-# --- Routes Flask ---
+def get_conversation_chain(vectorstore, prompt_metier_content=""):
+    """Initialise la chaîne de conversation avec Gork."""
+    global conversation_chain, chat_history
+    
+    try:
+        # LLM OpenRouter CORRECTEMENT configuré
+        llm = ChatOpenAI(
+            model="openai/gpt-4o-mini",
+            temperature=0.2,
+            openai_api_base=os.environ["OPENAI_API_BASE"],
+            openai_api_key=os.environ["OPENAI_API_KEY"],
+            max_tokens=3000
+        )
+        logger.info("✓ LLM initialisé")
+        
+        # Mémoire
+        memory = ConversationBufferMemory(
+            memory_key='chat_history',
+            return_messages=True,
+            output_key='answer'
+        )
+        
+        # Prompt avec Gork
+        CUSTOM_PROMPT = PromptTemplate(
+            template=GORK_SYSTEM_PROMPT,
+            input_variables=["context", "question", "prompt_metier"]
+        )
+        
+        partial_prompt = CUSTOM_PROMPT.partial(prompt_metier=prompt_metier_content)
+        
+        # Chaîne conversationnelle
+        conversation_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 8}),
+            memory=memory,
+            combine_docs_chain_kwargs={"prompt": partial_prompt},
+            return_source_documents=True,
+            verbose=True
+        )
+        
+        logger.info("✓ Chaîne conversationnelle Gork initialisée")
+        return conversation_chain
+        
+    except Exception as e:
+        logger.error(f"Erreur création chaîne: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 @app.route('/')
 def index():
-    """Rend la page principale de l'application."""
-    return render_template('index.html',
-                           uploaded_tariffs=uploaded_tariffs_files,
-                           uploaded_prompt=uploaded_prompt_metier_file)
+    """Page d'accueil."""
+    try:
+        tarif_files = [f for f in os.listdir(app.config['TARIFFS_FOLDER']) if f.endswith('.pdf')]
+        metier_files = [f for f in os.listdir(app.config['METIER_FOLDER']) if f.endswith('.pdf')]
+        prompt_file = metier_files[0] if metier_files else None
+        
+        return render_template('index.html', 
+                             tarif_files=tarif_files, 
+                             prompt_file=prompt_file,
+                             documents_loaded=documents_loaded)
+    except Exception as e:
+        logger.error(f"Erreur page d'accueil: {e}")
+        return render_template('index.html', tarif_files=[], prompt_file=None, documents_loaded=False)
 
-@app.route('/upload_tariffs', methods=['POST'])
-def upload_tariffs():
-    """Gère l'upload des fichiers de tarifs."""
-    if 'tariffsFiles' not in request.files:
-        return jsonify({"success": False, "message": "Aucun fichier sélectionné"}), 400
+
+@app.route('/upload_tarif', methods=['POST'])
+def upload_tarif():
+    """Upload fichiers tarifs."""
+    global knowledge_base, conversation_chain, documents_loaded
     
-    files = request.files.getlist('tariffsFiles')
-    
-    new_files = []
-    for file in files:
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'Aucun fichier'}), 400
+        
+        file = request.files['file']
         if file.filename == '':
-            continue
-        if file and file.filename.endswith('.pdf'): # Vérification simple du type
+            return jsonify({'error': 'Fichier vide'}), 400
+        
+        if file and file.filename.endswith('.pdf'):
             filename = secure_filename(file.filename)
-            file_path = os.path.join(TARIFFS_FOLDER, filename)
-            file.save(file_path)
-            uploaded_tariffs_files.append(filename) # Ajoute à la liste des fichiers en mémoire
-            new_files.append(filename)
-        else:
-            return jsonify({"success": False, "message": f"Seuls les fichiers PDF sont acceptés. '{file.filename}' ignoré."}), 400
+            filepath = os.path.join(app.config['TARIFFS_FOLDER'], filename)
+            file.save(filepath)
+            logger.info(f"📄 Tarif uploadé: {filename}")
             
-    return jsonify({"success": True, "message": f"{len(new_files)} fichiers de tarifs uploadés avec succès.", "files": uploaded_tariffs_files}), 200
+            # Recharger tous les tarifs
+            tarif_files = [
+                os.path.join(app.config['TARIFFS_FOLDER'], f) 
+                for f in os.listdir(app.config['TARIFFS_FOLDER']) 
+                if f.endswith('.pdf')
+            ]
+            
+            knowledge_base = process_pdfs(tarif_files)
+            
+            if knowledge_base and prompt_metier_doc:
+                conversation_chain = get_conversation_chain(knowledge_base, prompt_metier_doc)
+                documents_loaded = True
+            
+            return jsonify({
+                'message': f'✓ Fichier uploadé: {filename}',
+                'filename': filename,
+                'documents_loaded': documents_loaded
+            }), 200
+        
+        return jsonify({'error': 'Type de fichier invalide'}), 400
+        
+    except Exception as e:
+        logger.error(f"Erreur upload tarif: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/upload_prompt_metier', methods=['POST'])
 def upload_prompt_metier():
-    """Gère l'upload du fichier 'Prompt Métier'."""
-    global uploaded_prompt_metier_file # Nécessaire pour modifier la variable globale
-
-    if 'promptMetierFile' not in request.files:
-        return jsonify({"success": False, "message": "Aucun fichier sélectionné"}), 400
+    """Upload fichier métier."""
+    global prompt_metier_doc, conversation_chain, documents_loaded
     
-    file = request.files['promptMetierFile']
-    if file.filename == '':
-        return jsonify({"success": False, "message": "Aucun fichier sélectionné"}), 400
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'Aucun fichier'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'Fichier vide'}), 400
+        
+        if file and file.filename.endswith('.pdf'):
+            # Supprimer ancien
+            for f in os.listdir(app.config['METIER_FOLDER']):
+                os.remove(os.path.join(app.config['METIER_FOLDER'], f))
+            
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['METIER_FOLDER'], filename)
+            file.save(filepath)
+            logger.info(f"📄 Métier uploadé: {filename}")
+            
+            # Charger contenu
+            loader = PyPDFLoader(filepath)
+            prompt_metier_doc = " ".join([doc.page_content for doc in loader.load()])
+            
+            if knowledge_base:
+                conversation_chain = get_conversation_chain(knowledge_base, prompt_metier_doc)
+                documents_loaded = True
+            
+            return jsonify({
+                'message': f'✓ Prompt métier uploadé: {filename}',
+                'filename': filename,
+                'documents_loaded': documents_loaded
+            }), 200
+        
+        return jsonify({'error': 'Type de fichier invalide'}), 400
+        
+    except Exception as e:
+        logger.error(f"Erreur upload métier: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    if file and file.filename.endswith('.pdf'):
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(PROMPT_FOLDER, filename)
-        file.save(file_path)
-        uploaded_prompt_metier_file = filename # Met à jour le nom du fichier en mémoire
-        return jsonify({"success": True, "message": f"Fichier Prompt Métier '{filename}' uploadé avec succès.", "file": uploaded_prompt_metier_file}), 200
-    else:
-        return jsonify({"success": False, "message": "Seuls les fichiers PDF sont acceptés."}), 400
-
-# Variable globale pour stocker l'état actuel du devis
-current_quote = {}
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """
-    Gère les interactions de chat avec l'IA.
-    Simule la logique de l'IA et la mise à jour du devis.
-    """
-    global current_quote # Nécessaire pour modifier la variable globale
-    user_message = request.json.get('message')
+    """Chat avec Gork."""
+    global chat_history, conversation_chain, knowledge_base, prompt_metier_doc, documents_loaded
 
-    if not user_message:
-        return jsonify({"ai_message": "Veuillez taper un message.", "quote_preview": current_quote})
+    try:
+        user_message = request.json.get('message', '').strip()
+        
+        if not user_message:
+            return jsonify({'error': 'Message vide'}), 400
 
-    # Simule la réponse de l'IA et la mise à jour du devis
-    ai_response_text, updated_quote_data = simulate_ai_response(user_message, current_quote)
-    current_quote = updated_quote_data # Met à jour le devis global
+        if not knowledge_base or not prompt_metier_doc:
+            return jsonify({
+                'response': "⚠️ Veuillez d'abord uploader:\n1. Fichiers tarifs (BD Tissus)\n2. Prompt métier (BD Main d'œuvre)"
+            }), 503
 
-    return jsonify({"ai_message": ai_response_text, "quote_preview": current_quote})
+        if not conversation_chain:
+            conversation_chain = get_conversation_chain(knowledge_base, prompt_metier_doc)
+            if not conversation_chain:
+                return jsonify({'response': "❌ Erreur initialisation IA"}), 500
+
+        logger.info("=" * 80)
+        logger.info(f"💬 Question: {user_message}")
+        logger.info(f"📝 Historique: {len(chat_history)} échanges")
+
+        # APPEL CORRECT avec invoke()
+        response = conversation_chain.invoke({'question': user_message})
+        ai_response = response['answer']
+        source_docs = response.get('source_documents', [])
+        
+        # Log sources
+        if source_docs:
+            logger.info(f"📚 Sources: {len(source_docs)} docs")
+            for i, doc in enumerate(source_docs[:3], 1):
+                source = doc.metadata.get('source_file', 'Unknown')
+                logger.info(f"  {i}. {source}")
+        
+        chat_history.append({"user": user_message, "ai": ai_response})
+        
+        # Convertir en HTML
+        html_response = markdown.markdown(ai_response)
+        
+        logger.info(f"✅ Réponse: {len(ai_response)} car.")
+        logger.info("=" * 80)
+        
+        return jsonify({
+            'response': ai_response,
+            'html_response': html_response,
+            'sources_used': len(source_docs),
+            'chat_history_length': len(chat_history)
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': f"Erreur: {str(e)}",
+            'response': f"⚠️ Une erreur est survenue.\n\nDétails: {str(e)}"
+        }), 500
 
 
-@app.route('/download_pdf', methods=['GET'])
-def download_pdf():
-    """Simule le téléchargement du devis au format PDF."""
-    if not current_quote:
-        return "Aucun devis à télécharger.", 404
+@app.route('/download_markdown', methods=['POST'])
+def download_markdown():
+    """Télécharge le devis."""
+    try:
+        markdown_content = request.json.get('content')
+        if not markdown_content:
+            return jsonify({'error': 'Aucun contenu'}), 400
 
-    # Pour le MVP, nous générons un fichier HTML et le faisons passer pour un PDF.
-    # Dans une vraie application, vous généreriez un vrai PDF.
-    pdf_content = generate_pdf_content(current_quote)
+        date_str = datetime.now().strftime("%Y%m%d")
+        filename = f"devis_tapisserie_{date_str}.md"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(markdown_content)
+        
+        logger.info(f"💾 Devis téléchargé: {filename}")
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+        
+    except Exception as e:
+        logger.error(f"Erreur téléchargement: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/delete_tarif/<filename>', methods=['DELETE'])
+def delete_tarif(filename):
+    """Supprime un fichier tarif."""
+    global knowledge_base, conversation_chain, documents_loaded
     
-    # Créer un fichier temporaire en mémoire pour l'envoyer
-    buffer = io.BytesIO(pdf_content.encode('utf-8'))
-    buffer.seek(0)
+    try:
+        filepath = os.path.join(app.config['TARIFFS_FOLDER'], filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            logger.info(f"🗑️  Supprimé: {filename}")
+            
+            tarif_files = [
+                os.path.join(app.config['TARIFFS_FOLDER'], f)
+                for f in os.listdir(app.config['TARIFFS_FOLDER'])
+                if f.endswith('.pdf')
+            ]
+            
+            if not tarif_files:
+                knowledge_base = None
+                conversation_chain = None
+                documents_loaded = False
+            else:
+                knowledge_base = process_pdfs(tarif_files)
+                if prompt_metier_doc:
+                    conversation_chain = get_conversation_chain(knowledge_base, prompt_metier_doc)
+            
+            return jsonify({'message': f'Fichier {filename} supprimé'}), 200
+        
+        return jsonify({'error': 'Fichier non trouvé'}), 404
+        
+    except Exception as e:
+        logger.error(f"Erreur suppression: {e}")
+        return jsonify({'error': str(e)}), 500
 
-    # Envoyer le fichier HTML avec un header de type PDF
-    # Le navigateur le téléchargera comme .pdf mais son contenu sera HTML
-    return send_file(
-        buffer,
-        as_attachment=True,
-        download_name="Devis_Artisan.html", # Ou .pdf si vous générez un vrai PDF
-        mimetype="text/html" # Ou "application/pdf" pour un vrai PDF
-    )
+
+@app.route('/check_status', methods=['GET'])
+def check_status():
+    """Statut du système."""
+    tarifs_count = len([f for f in os.listdir(app.config['TARIFFS_FOLDER']) if f.endswith('.pdf')])
+    metier_count = len([f for f in os.listdir(app.config['METIER_FOLDER']) if f.endswith('.pdf')])
+    
+    return jsonify({
+        'system': 'Gork Tapisserie',
+        'documents_loaded': documents_loaded,
+        'knowledge_base_ready': knowledge_base is not None,
+        'conversation_chain_ready': conversation_chain is not None,
+        'tarifs_files': tarifs_count,
+        'metier_files': metier_count,
+        'chat_history_length': len(chat_history)
+    })
+
+
+@app.route('/reset_conversation', methods=['POST'])
+def reset_conversation():
+    """Réinitialise la conversation."""
+    global chat_history
+    chat_history = []
+    logger.info("🔄 Conversation réinitialisée")
+    return jsonify({'message': 'Conversation réinitialisée'})
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check."""
+    return jsonify({
+        'status': 'healthy',
+        'system': 'Gork Tapisserie Assistant',
+        'version': '2.0.0'
+    })
+
+
+# Initialisation au démarrage
+with app.app_context():
+    try:
+        logger.info("=" * 80)
+        logger.info("🚀 DÉMARRAGE SYSTÈME GORK")
+        logger.info("=" * 80)
+        
+        # Charger fichiers existants
+        tarif_files_existing = [
+            os.path.join(app.config['TARIFFS_FOLDER'], f)
+            for f in os.listdir(app.config['TARIFFS_FOLDER'])
+            if f.endswith('.pdf')
+        ]
+        
+        if tarif_files_existing:
+            knowledge_base = process_pdfs(tarif_files_existing)
+        
+        prompt_file_existing = [
+            f for f in os.listdir(app.config['METIER_FOLDER'])
+            if f.endswith('.pdf')
+        ]
+        
+        if prompt_file_existing:
+            filepath = os.path.join(app.config['METIER_FOLDER'], prompt_file_existing[0])
+            loader = PyPDFLoader(filepath)
+            prompt_metier_doc = " ".join([doc.page_content for doc in loader.load()])
+
+        if knowledge_base and prompt_metier_doc:
+            conversation_chain = get_conversation_chain(knowledge_base, prompt_metier_doc)
+            documents_loaded = True
+            logger.info("✅ Système prêt")
+        else:
+            logger.info("⚠️  En attente des fichiers")
+        
+        logger.info("=" * 80)
+        
+    except Exception as e:
+        logger.error(f"Erreur initialisation: {e}")
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    logger.info("🌐 Serveur Flask sur http://127.0.0.1:5000")
+    app.run(debug=True, host='127.0.0.1', port=5000)
