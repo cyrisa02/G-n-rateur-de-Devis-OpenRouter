@@ -1,9 +1,10 @@
 streamlit
+python-dotenv
 langchain
 langchain-openai
 langchain-huggingface
 langchain-community
-langchain-text-splitters   # ✅ AJOUTÉ ICI
+langchain-text-splitters
 faiss-cpu
-huggingface_hub
-python-dotenv
+sentence-transformers
+PyPDF2
