@@ -6,4 +6,8 @@ unstructured
 pypdf
 faiss-cpu
 sentence-transformers
+streamlit
+langchain-huggingface
+huggingface_hub
+
 markdown
