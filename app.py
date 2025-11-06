@@ -27,7 +27,7 @@ from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.document_loaders import PyPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # ✅ Nouveau chemin
 from langchain.prompts import PromptTemplate
 
 # Configuration du logging
@@ -634,4 +634,5 @@ if __name__ == '__main__':
     logger.info("🌐 Serveur Flask sur http://127.0.0.1:5000")
 
     app.run(debug=True, host='127.0.0.1', port=5000)
+
 
