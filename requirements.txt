@@ -3,6 +3,7 @@ langchain
 langchain-openai
 langchain-huggingface
 langchain-community
+langchain-text-splitters   # ✅ AJOUTÉ ICI
 faiss-cpu
 huggingface_hub
 python-dotenv
