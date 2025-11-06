@@ -1,13 +1,8 @@
-Flask
-python-dotenv
-langchain
-langchain-community
-langchain-openai          # ✅ AJOUTÉ ICI
-unstructured
-pypdf
-faiss-cpu
-sentence-transformers
 streamlit
+langchain
+langchain-openai
 langchain-huggingface
+langchain-community
+faiss-cpu
 huggingface_hub
-markdown
+python-dotenv
