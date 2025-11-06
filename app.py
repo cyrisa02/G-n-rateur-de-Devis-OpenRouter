@@ -10,7 +10,13 @@ from datetime import datetime
 from langchain_huggingface import HuggingFaceEmbeddings  # CORRIGÉ
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI  # CORRIGÉ
-from langchain.chains import ConversationalRetrievalChain
+# ✅ Nouvelle approche (à adapter selon votre logique)
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_openai import ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.memory import ConversationBufferMemory
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -618,4 +624,5 @@ with app.app_context():
 
 if __name__ == '__main__':
     logger.info("🌐 Serveur Flask sur http://127.0.0.1:5000")
+
     app.run(debug=True, host='127.0.0.1', port=5000)
